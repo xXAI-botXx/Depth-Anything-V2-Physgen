@@ -4,3 +4,7 @@ matplotlib
 opencv-python
 torch
 torchvision
+datasets
+pillow
+wandb
+tqdm

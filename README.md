@@ -1,5 +1,69 @@
 <div align="center">
-<h1>Depth Anything V2</h1>
+<h1><s>Depth</s> <span style="font-family: 'Pacifico', cursive;">Physic</span> Anything V2</h1>
+
+Contents:
+- Physic Anything V2
+  - [Installation](#installation)
+  - [Usage](#usage)
+- <a href="#original_start">Original README</h1>
+
+
+
+### Installation
+
+Open a bash in this folder hwere this README.md is and run (install anaconda and add a env for this model):
+
+```bash
+cd ~
+wget https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Linux-x86_64.sh
+bash Anaconda3-2024.10-1-Linux-x86_64.sh
+export PATH="$HOME/anaconda3/bin:$PATH"
+conda init
+
+conda create -n phy_any python=3.12 pip -y
+conda activate phy_any
+pip install -r ./requirements.txt
+```
+
+-> Add your Weights & Bias API key:
+```bash
+conda activate phy_any
+wandb login your_api_key_here
+```
+-> or remove *--use_wandb --wandb_project_name Master-PhysGen* from the arguments.
+
+
+### Usage
+
+**Start a training:**<br>
+```anaconda
+cd path/to/Depth_Anything_V2_Physgen
+conda activate phy_any
+
+nohup python train.py --variation sound_reflection --model_name any_test_1 --encoder vitl --batch_size 18 --epochs 100 --lr 0.0001 > ./any_test_1.log 2>&1 &
+```
+
+
+
+**Make inferences:**<br>
+```anaconda
+cd path/to/Depth_Anything_V2_Physgen
+conda activate phy_any
+
+python train.py --variation sound_reflection --model_name any_test_1 --encoder vitl
+```
+
+
+
+
+<br><br>
+
+---
+
+<br>
+
+<div align="center">
+<h1 id="original_start">Depth Anything V2</h1>
 
 [**Lihe Yang**](https://liheyoung.github.io/)<sup>1</sup> · [**Bingyi Kang**](https://bingykang.github.io/)<sup>2&dagger;</sup> · [**Zilong Huang**](http://speedinghzl.github.io/)<sup>2</sup>
 <br>
