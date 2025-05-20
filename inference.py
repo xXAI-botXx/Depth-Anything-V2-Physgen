@@ -42,7 +42,7 @@ def normalize_depth(depth):
     depth_max = depth.max()
     return (depth - depth_min) / (depth_max - depth_min + 1e-8)
 
-def inference_forward(input_img, model, device):
+def inference_forward(input_img, model, device, scale_to_256=True):
     input_img = input_img.to(device)
     pred = model(input_img)
     
@@ -62,7 +62,8 @@ def inference_forward(input_img, model, device):
     pred = pred.detach().numpy()
 
     # Value Upscaling
-    pred = pred * 256
+    if scale_to_256:
+        pred = pred * 256
 
     # Invert
     # pred = np.abs(pred-256)
@@ -80,13 +81,30 @@ def inference_method(input_img, model, size):
 
     return pred
 
-def inference(variation, model_name, encoder):
+def inference(variation, model_name, encoder, save_only_result=False):
     exact_model_name = get_newest_model(model_name, path="./checkpoints")
     model_path = f"./checkpoints/{exact_model_name}"
+    
+    # Create and clear output paths
     output_path = f"./eval/{model_name}"
-
+    os.makedirs(output_path, exist_ok=True)
     if os.path.exists(output_path):
         shutil.rmtree(output_path)
+
+    output_pred_path = f"{output_path}/pred"
+    os.makedirs(output_pred_path, exist_ok=True)
+    if os.path.exists(output_pred_path):
+        shutil.rmtree(output_pred_path)
+
+    output_real_path = f"{output_path}/real"
+    os.makedirs(output_real_path, exist_ok=True)
+    if os.path.exists(output_real_path):
+        shutil.rmtree(output_real_path)
+
+    output_osm_path = f"{output_path}/osm"
+    os.makedirs(output_osm_path, exist_ok=True)
+    if os.path.exists(output_osm_path):
+        shutil.rmtree(output_osm_path)
 
     # load data
     dataset = PhysGenDataset(mode="test", variation=variation)
@@ -121,19 +139,39 @@ def inference(variation, model_name, encoder):
         
         # phys = np.repeat(phys[..., np.newaxis], 3, axis=-1)
         
-        os.makedirs(output_path, exist_ok=True)
-        save_img = os.path.join(output_path, f"{model_name}_{idx}.png")
+        # Save Results
+        file_name = f"{model_name}_{idx}.png"
+        if save_only_result:
+            save_img = os.path.join(output_path, file_name)
+        else:
+            save_img = os.path.join(output_pred_path, file_name)
         cv2.imwrite(save_img, forward_img)
         print(f"    -> saved pred at {save_img}")
+
+        if not save_only_result:
+            # save real image
+            save_img = os.path.join(output_real_path, file_name)
+            cv2.imwrite(save_img, target_img.detach().numpy())   # works? right format?
+            print(f"    -> saved real at {save_img}")
+
+            # save osm image
+            save_img = os.path.join(output_osm_path, file_name)
+            cv2.imwrite(save_img, input_img.detach().numpy())   # works? right format?
+            print(f"    -> saved osm at {save_img}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inference arguments")
     parser.add_argument("--variation", help="Chooses the used dataset variant: sound_baseline, sound_reflection, sound_diffraction, sound_combined.")
     parser.add_argument("--model_name", help="Name of the model (without .pth) in the ./checkpoints folder.")
     parser.add_argument("--encoder", default="vitb", choices=["vits", "vitb", "vitl", "vitg"])
+    parser.add_argument("--save_only_result", action='store_true')
     args = parser.parse_args()
 
-    inference(variation=args.variation, model_name=args.model_name, encoder=args.encoder)
+    inference(variation=args.variation, 
+              model_name=args.model_name, 
+              encoder=args.encoder, 
+              save_only_result=args.save_only_result
+             )
 
 
 

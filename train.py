@@ -15,7 +15,17 @@ from tqdm import tqdm
 import wandb
 import torchvision.utils as vutils
 
+class SiLogLoss(nn.Module):
+    def __init__(self, lambd=0.5):
+        super().__init__()
+        self.lambd = lambd
 
+    def forward(self, pred, target):
+        diff_log = torch.log(target) - torch.log(pred)
+        loss = torch.sqrt(torch.pow(diff_log, 2).mean() -
+                          self.lambd * torch.pow(diff_log.mean(), 2))
+
+        return loss
 
 def train(variation, model_name, encoder, batch_size, epochs, lr):
     # Set device
@@ -36,11 +46,24 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
     }
 
     model = DepthAnythingV2(**model_configs[encoder]).to(device)
+    for param in model.parameters():
+        param.requires_grad = True
 
-    optimizer = optim.AdamW(model.depth_head.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-    criterion = nn.L1Loss()
-    lambda_l1 = 1
+
+    # model.depth_head.parameters()
+    lambda_loss = 0.5
+    criterion_1 = SiLogLoss(lambd=lambda_loss)
+    lambda_l1 = 1.0
+    criterion_2 = nn.L1Loss()
+    # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = optim.AdamW([
+                             {'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': lr},
+                             {'params': [param for name, param in model.named_parameters() if 'pretrained' not in name], 'lr': lr * 10.0}
+                            ], 
+                            lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) #, eta_min=1e-6)
+
+    total_iters = epochs * len(train_loader)
 
     # Initialize Weights & Biases
     wandb.init(project="Master-PhysGen", name=model_name, config={
@@ -52,21 +75,22 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
     })
     wandb.watch(model, log="all")
 
-    best_model = None
-    best_loss = None
+    last_model = None
+    # best_loss = None
 
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
             input_img, target_depth, _ = batch
+            target_depth = target_depth.squeeze(1)
             input_img, target_depth = input_img.to(device), target_depth.to(device)
 
             optimizer.zero_grad()
             pred_depth = model(input_img)
-            # print(pred_depth.shape)
-            # print(target_depth.shape)
-            loss = criterion(pred_depth, target_depth) * lambda_l1
+            # print(f"Prediction:\n    - Shape: {pred_depth.shape}\n    - Min: {pred_depth.min()}\n    - Max: {pred_depth.max()}")
+            # print(f"Taegt:\n    - Shape: {target_depth.shape}\n    - Min: {target_depth.min()}\n    - Max: {target_depth.max()}")
+            loss = criterion_1(pred_depth, target_depth) + (criterion_2(pred_depth, target_depth) * lambda_l1)
             loss.backward()
             optimizer.step()
 
@@ -84,12 +108,12 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
                 input_img, target_depth, _ = batch
                 input_img, target_depth = input_img.to(device), target_depth.to(device)
                 pred_depth = model(input_img)
-                loss = criterion(pred_depth, target_depth) * 1000
+                loss = criterion_1(pred_depth, target_depth) + (criterion_2(pred_depth, target_depth) * lambda_l1)
                 val_loss += loss.item()
 
                 if i == 0:
                     # Log first batch images
-                    val_img_log = inference_forward(input_img, model, device)
+                    val_img_log = inference_forward(input_img, model, device, scale_to_256=True)
 
 
         avg_val_loss = val_loss / len(val_loader)
@@ -102,19 +126,25 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
         })
 
         # Save model
-        if not best_model:
-            best_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
-            best_loss = avg_val_loss
-        elif best_loss > avg_val_loss:
-            os.remove(best_model)
+        # if not best_model:
+        #     best_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
+        #     best_loss = avg_val_loss
+        # elif best_loss > avg_val_loss:
+        #     os.remove(best_model)
 
-            best_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
-            best_loss = avg_val_loss
-        else:
-            continue
+        #     best_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
+        #     best_loss = avg_val_loss
+        # else:
+        #     continue
+
+        if best_model:
+            os.remove(last_model)
+
+        last_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
 
         # Update Loss Weighting
         if avg_val_loss < 0.5:
+            # criterion.lambd *= 10
             lambda_l1 *= 10
         
         os.makedirs("./checkpoints", exist_ok=True)

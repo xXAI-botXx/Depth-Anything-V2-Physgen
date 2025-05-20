@@ -8,3 +8,8 @@ datasets
 pillow
 wandb
 tqdm
+ipython
+ipykernel
+scikit-image
+pytorch-msssim
+pandas

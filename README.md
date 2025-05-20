@@ -1,5 +1,6 @@
 <div align="center">
 <h1><s>Depth</s> <span style="font-family: 'Pacifico', cursive;">Physic</span> Anything V2</h1>
+</div>
 
 Contents:
 - Physic Anything V2
@@ -40,7 +41,7 @@ wandb login your_api_key_here
 cd path/to/Depth_Anything_V2_Physgen
 conda activate phy_any
 
-nohup python train.py --variation sound_reflection --model_name any_test_3 --encoder vitl --batch_size 18 --epochs 100 --lr 0.0005 > ./any_test_3.log 2>&1 &
+nohup python train.py --variation sound_reflection --model_name phys_any_1 --encoder vitl --batch_size 16 --epochs 150 --lr 0.000005 > ./phys_any_1.log 2>&1 &
 ```
 
 Killing the process: `ps aux | grep train.py | grep -v grep | awk '{print $2}' | xargs kill -9`
