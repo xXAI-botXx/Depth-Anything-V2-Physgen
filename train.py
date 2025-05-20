@@ -37,8 +37,10 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
 
     model = DepthAnythingV2(**model_configs[encoder]).to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.depth_head.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
     criterion = nn.L1Loss()
+    lambda_l1 = 1
 
     # Initialize Weights & Biases
     wandb.init(project="Master-PhysGen", name=model_name, config={
@@ -60,13 +62,11 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
             input_img, target_depth, _ = batch
             input_img, target_depth = input_img.to(device), target_depth.to(device)
 
-            
-
             optimizer.zero_grad()
             pred_depth = model(input_img)
             # print(pred_depth.shape)
             # print(target_depth.shape)
-            loss = criterion(pred_depth, target_depth) * 1000
+            loss = criterion(pred_depth, target_depth) * lambda_l1
             loss.backward()
             optimizer.step()
 
@@ -96,6 +96,8 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
         wandb.log({
             "val_loss": avg_val_loss,
             "epoch": epoch + 1,
+            "lr": scheduler.get_last_lr()[0],
+            "lambda_l1": lambda_l1,
             "sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
         })
 
@@ -110,11 +112,18 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
             best_loss = avg_val_loss
         else:
             continue
+
+        # Update Loss Weighting
+        if avg_val_loss < 0.5:
+            lambda_l1 *= 10
         
         os.makedirs("./checkpoints", exist_ok=True)
         save_path = best_model
         torch.save(model.state_dict(), save_path)
         print(f"Saved model at {save_path}")
+
+        # Update learn rate
+        scheduler.step()
 
 
 if __name__ == "__main__":
