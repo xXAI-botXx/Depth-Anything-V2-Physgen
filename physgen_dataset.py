@@ -63,7 +63,7 @@ def resize_tensor_to_divisible_by_14(tensor: torch.Tensor) -> torch.Tensor:
 
 class PhysGenDataset(Dataset):
 
-    def __init__(self, variation="sound_base", mode="train"):
+    def __init__(self, variation="sound_baseline", mode="train"):
         """
         Loads PhysGen Dataset.
 

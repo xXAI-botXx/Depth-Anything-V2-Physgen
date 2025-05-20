@@ -8,19 +8,13 @@ from torch.utils.data import DataLoader
 
 from physgen_dataset import PhysGenDataset
 from depth_anything_v2.dpt import DepthAnythingV2
+from inference import inference_forward
 
 import numpy as np
 from tqdm import tqdm
 import wandb
 import torchvision.utils as vutils
 
-
-
-def normalize_depth(depth):
-    # Normalize depth to [0, 1] range for visualization
-    depth_min = depth.min()
-    depth_max = depth.max()
-    return (depth - depth_min) / (depth_max - depth_min + 1e-8)
 
 
 def train(variation, model_name, encoder, batch_size, epochs, lr):
@@ -56,6 +50,9 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
     })
     wandb.watch(model, log="all")
 
+    best_model = None
+    best_loss = None
+
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -67,9 +64,9 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
 
             optimizer.zero_grad()
             pred_depth = model(input_img)
-            print(pred_depth.shape)
-            print(target_depth.shape)
-            loss = criterion(pred_depth, target_depth)
+            # print(pred_depth.shape)
+            # print(target_depth.shape)
+            loss = criterion(pred_depth, target_depth) * 1000
             loss.backward()
             optimizer.step()
 
@@ -87,13 +84,13 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
                 input_img, target_depth, _ = batch
                 input_img, target_depth = input_img.to(device), target_depth.to(device)
                 pred_depth = model(input_img)
-                loss = criterion(pred_depth, target_depth)
+                loss = criterion(pred_depth, target_depth) * 1000
                 val_loss += loss.item()
 
                 if i == 0:
                     # Log first batch images
-                    depth_vis = normalize_depth(pred_depth).cpu()
-                    val_img_log = vutils.make_grid(depth_vis, normalize=True)
+                    val_img_log = inference_forward(input_img, model, device)
+
 
         avg_val_loss = val_loss / len(val_loader)
         wandb.log({
@@ -103,8 +100,19 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
         })
 
         # Save model
+        if not best_model:
+            best_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
+            best_loss = avg_val_loss
+        elif best_loss > avg_val_loss:
+            os.remove(best_model)
+
+            best_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
+            best_loss = avg_val_loss
+        else:
+            continue
+        
         os.makedirs("./checkpoints", exist_ok=True)
-        save_path = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
+        save_path = best_model
         torch.save(model.state_dict(), save_path)
         print(f"Saved model at {save_path}")
 
