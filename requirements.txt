@@ -13,3 +13,4 @@ ipykernel
 scikit-image
 pytorch-msssim
 pandas
+kornia

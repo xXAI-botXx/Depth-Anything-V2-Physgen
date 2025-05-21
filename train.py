@@ -3,6 +3,7 @@ import os
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
@@ -14,6 +15,74 @@ import numpy as np
 from tqdm import tqdm
 import wandb
 import torchvision.utils as vutils
+
+import kornia  # for SSIM and gradients
+
+class CombinedLoss(nn.Module):
+    def __init__(self, 
+                 silog_lambda=0.5, 
+                 weight_silog=1.0, 
+                 weight_grad=0.5, 
+                 weight_ssim=0.5):
+        super().__init__()
+        self.silog_lambda = silog_lambda
+        self.weight_silog = weight_silog
+        self.weight_grad = weight_grad
+        self.weight_ssim = weight_ssim
+
+        # Instantiate SSIMLoss module
+        self.ssim_module = kornia.losses.SSIMLoss(window_size=11, reduction='mean')
+
+    def silog_loss(self, pred, target):
+        eps = 1e-6
+        pred = torch.clamp(pred, min=eps)
+        target = torch.clamp(target, min=eps)
+        
+        diff_log = torch.log(target) - torch.log(pred)
+        loss = torch.sqrt(torch.mean(diff_log ** 2) -
+                          self.silog_lambda * torch.mean(diff_log) ** 2)
+        return loss
+
+    def gradient_l1_loss(self, pred, target):
+        # Create Channel Dimension
+        if pred.ndim == 3:
+            pred = pred.unsqueeze(1)
+        if target.ndim == 3:
+            target = target.unsqueeze(1)
+
+        # Gradient in x-direction (horizontal -> dim=3)
+        pred_grad_x = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+        target_grad_x = target[:, :, :, 1:] - target[:, :, :, :-1]
+
+        # Gradient in y-direction (vertical -> dim=2)
+        pred_grad_y = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+        target_grad_y = target[:, :, 1:, :] - target[:, :, :-1, :]
+
+        loss_x = F.l1_loss(pred_grad_x, target_grad_x)
+        loss_y = F.l1_loss(pred_grad_y, target_grad_y)
+
+        return loss_x + loss_y
+
+    def ssim_loss(self, pred, target):
+        # SSIM returns similarity, so we subtract from 1
+        if pred.ndim == 3:
+            pred = pred.unsqueeze(1)
+        if target.ndim == 3:
+            target = target.unsqueeze(1)
+
+        return self.ssim_module(pred, target)
+
+    def forward(self, pred, target):
+        loss_silog = self.silog_loss(pred, target)
+        loss_grad = self.gradient_l1_loss(pred, target)
+        loss_ssim = self.ssim_loss(pred, target)
+
+        total_loss = (
+            self.weight_silog * loss_silog +
+            self.weight_grad * loss_grad +
+            self.weight_ssim * loss_ssim
+        )
+        return total_loss
 
 class SiLogLoss(nn.Module):
     def __init__(self, lambd=0.5):
@@ -37,6 +106,8 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
 
+    total_iters = epochs * len(train_loader)    # loop steps / optimizer steps, not every single image steps
+
     # Model configuration
     model_configs = {
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
@@ -51,19 +122,42 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
 
 
     # model.depth_head.parameters()
-    lambda_loss = 0.5
-    criterion_1 = SiLogLoss(lambd=lambda_loss)
-    lambda_l1 = 1.0
-    criterion_2 = nn.L1Loss()
+    # lambda_loss = 0.5
+    # criterion_1 = SiLogLoss(lambd=lambda_loss)
+    criterion = CombinedLoss(silog_lambda=0.5, 
+                             weight_silog=1.0, 
+                             weight_grad=0.5, 
+                             weight_ssim=0.5)
+
     # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    start_lr_1 = 1e-8
+    goal_lr_1 = lr*0.001
+    start_lr_2 = lr*0.0001
+    goal_lr_2 = lr # * 10.0
     optimizer = optim.AdamW([
-                             {'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': lr},
-                             {'params': [param for name, param in model.named_parameters() if 'pretrained' not in name], 'lr': lr * 10.0}
+                             {'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': start_lr_1},
+                             {'params': [param for name, param in model.named_parameters() if 'pretrained' not in name], 'lr': start_lr_2}
                             ], 
                             lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) #, eta_min=1e-6)
+    warm_up_iters = int(total_iters*0.05)
+    warm_up_blend_1 = np.linspace(start_lr_1, goal_lr_1, warm_up_iters)
+    warm_up_blend_2 = np.linspace(start_lr_2, goal_lr_2, warm_up_iters)
 
-    total_iters = epochs * len(train_loader)
+    # create schedular
+    def lr_lambda(epoch):
+        perc_goal_lr = 0.05  # x% of the original lr
+        start_epoch = 5
+        duration = 5.0
+        if epoch < start_epoch:
+            return 1.0
+        elif start_epoch <= epoch < (start_epoch+duration):
+            return 1.0 - (1.0-perc_goal_lr) * ((epoch - start_epoch) / duration)  # linear runter auf 0.1
+        else:
+            return 1.0 - (1.0-0.0001) * min(((epoch - (start_epoch+duration)) / epochs), 1.0)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) #, eta_min=1e-6)
+
+    
 
     # Initialize Weights & Biases
     wandb.init(project="Master-PhysGen", name=model_name, config={
@@ -76,7 +170,7 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
     wandb.watch(model, log="all")
 
     last_model = None
-    # best_loss = None
+    cur_iter = 0
 
     for epoch in range(epochs):
         model.train()
@@ -89,12 +183,18 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
             optimizer.zero_grad()
             pred_depth = model(input_img)
             # print(f"Prediction:\n    - Shape: {pred_depth.shape}\n    - Min: {pred_depth.min()}\n    - Max: {pred_depth.max()}")
-            # print(f"Taegt:\n    - Shape: {target_depth.shape}\n    - Min: {target_depth.min()}\n    - Max: {target_depth.max()}")
-            loss = criterion_1(pred_depth, target_depth) + (criterion_2(pred_depth, target_depth) * lambda_l1)
+            # print(f"Target:\n    - Shape: {target_depth.shape}\n    - Min: {target_depth.min()}\n    - Max: {target_depth.max()}")
+            loss = criterion(pred_depth, target_depth) # criterion_1(pred_depth, target_depth)
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item()
+
+            if cur_iter < warm_up_iters:
+                optimizer.param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
+                optimizer.param_groups[1]['lr'] = warm_up_blend_2[cur_iter]
+            
+            cur_iter += 1
 
         avg_train_loss = running_loss / len(train_loader)
         wandb.log({"train_loss": avg_train_loss, "epoch": epoch + 1})
@@ -108,7 +208,7 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
                 input_img, target_depth, _ = batch
                 input_img, target_depth = input_img.to(device), target_depth.to(device)
                 pred_depth = model(input_img)
-                loss = criterion_1(pred_depth, target_depth) + (criterion_2(pred_depth, target_depth) * lambda_l1)
+                loss = criterion(pred_depth, target_depth) # criterion_1(pred_depth, target_depth) 
                 val_loss += loss.item()
 
                 if i == 0:
@@ -120,8 +220,8 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
         wandb.log({
             "val_loss": avg_val_loss,
             "epoch": epoch + 1,
-            "lr": scheduler.get_last_lr()[0],
-            "lambda_l1": lambda_l1,
+            "lr encoder": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
+            "lr decoder": optimizer.param_groups[1]['lr'],
             "sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
         })
 
@@ -137,23 +237,27 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
         # else:
         #     continue
 
-        if best_model:
+        if last_model:
             os.remove(last_model)
 
         last_model = f"./checkpoints/{args.model_name}_epoch{epoch+1}.pth"
 
         # Update Loss Weighting
-        if avg_val_loss < 0.5:
-            # criterion.lambd *= 10
-            lambda_l1 *= 10
+        # if 0 <= epoch <= 10:    
+        #     lambda_l1 = min(1.0, (epoch - 5) / 5)
+        # elif epoch > 10:
+        #     lambda_l1 = min(50.0, ((epoch - 10) / 150) * 50.0)
+        # else:
+        #     lambda_l1 = 0.0
         
         os.makedirs("./checkpoints", exist_ok=True)
-        save_path = best_model
+        save_path = last_model
         torch.save(model.state_dict(), save_path)
         print(f"Saved model at {save_path}")
 
         # Update learn rate
-        scheduler.step()
+        if cur_iter >= warm_up_iters:
+            scheduler.step()
 
 
 if __name__ == "__main__":
