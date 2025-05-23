@@ -22,13 +22,26 @@ class CombinedLoss(nn.Module):
     def __init__(self, 
                  silog_lambda=0.5, 
                  weight_silog=1.0, 
-                 weight_grad=0.5, 
-                 weight_ssim=0.5):
+                 weight_grad=1.0, 
+                 weight_ssim=1.0,
+                 weight_l1=1.0):
         super().__init__()
         self.silog_lambda = silog_lambda
         self.weight_silog = weight_silog
         self.weight_grad = weight_grad
         self.weight_ssim = weight_ssim
+        self.weight_l1 = weight_l1
+
+        self.init_weight_silog = self.weight_silog
+        self.init_weight_grad = self.weight_grad
+        self.init_weight_ssim = self.weight_ssim
+        self.init_weight_l1 = self.weight_l1
+
+        self.avg_loss_silog = 0
+        self.avg_loss_grad = 0
+        self.avg_loss_ssim = 0
+        self.avg_loss_l1 = 0
+        self.steps = 0
 
         # Instantiate SSIMLoss module
         self.ssim_module = kornia.losses.SSIMLoss(window_size=11, reduction='mean')
@@ -72,29 +85,67 @@ class CombinedLoss(nn.Module):
 
         return self.ssim_module(pred, target)
 
+    def l1_loss(self, pred, target):
+        loss = torch.abs(target - pred)
+        return loss.mean()
+
     def forward(self, pred, target):
         loss_silog = self.silog_loss(pred, target)
         loss_grad = self.gradient_l1_loss(pred, target)
         loss_ssim = self.ssim_loss(pred, target)
+        loss_l1 = self.l1_loss(pred, target)
+
+        self.avg_loss_silog += loss_silog
+        self.avg_loss_grad += loss_grad
+        self.avg_loss_ssim += loss_ssim
+        self.avg_loss_l1 += loss_l1
+        self.steps += 1
 
         total_loss = (
             self.weight_silog * loss_silog +
             self.weight_grad * loss_grad +
-            self.weight_ssim * loss_ssim
+            self.weight_ssim * loss_ssim +
+            self.weight_l1 * loss_l1
         )
         return total_loss
 
-class SiLogLoss(nn.Module):
-    def __init__(self, lambd=0.5):
-        super().__init__()
-        self.lambd = lambd
+    def step(self, epoch):
+        self.avg_loss_silog = 0
+        self.avg_loss_grad = 0
+        self.avg_loss_ssim = 0
+        self.avg_loss_l1 = 0
+        self.steps = 0
+        
+        # if 5 < epoch < 50:
+        #     new_adjustment = min(1.0*((epoch-5)/10), 1.0)
+        #     self.weight_silog = self.init_weight_silog+new_adjustment
+        #     self.weight_grad = self.init_weight_grad+new_adjustment
+        #     self.weight_ssim = self.init_weight_ssim+new_adjustment
+        #     self.weight_l1 = self.init_weight_l1+new_adjustment
+        # elif epoch >= 50:
+        #     new_adjustment = min(10.0*((epoch-50)/100), 10.0)
+        #     self.weight_silog = self.init_weight_silog+new_adjustment
+        #     self.weight_grad = self.init_weight_grad+new_adjustment
+        #     self.weight_ssim = self.init_weight_ssim+new_adjustment
+        #     self.weight_l1 = self.init_weight_l1+new_adjustment
 
-    def forward(self, pred, target):
-        diff_log = torch.log(target) - torch.log(pred)
-        loss = torch.sqrt(torch.pow(diff_log, 2).mean() -
-                          self.lambd * torch.pow(diff_log.mean(), 2))
+    def get_avg_losses(self):
+        return (self.avg_loss_silog/self.steps,
+                self.avg_loss_grad/self.steps,
+                self.avg_loss_ssim/self.steps,
+                self.avg_loss_l1/self.steps)
 
-        return loss
+# class SiLogLoss(nn.Module):
+#     def __init__(self, lambd=0.5):
+#         super().__init__()
+#         self.lambd = lambd
+
+#     def forward(self, pred, target):
+#         diff_log = torch.log(target) - torch.log(pred)
+#         loss = torch.sqrt(torch.pow(diff_log, 2).mean() -
+#                           self.lambd * torch.pow(diff_log.mean(), 2))
+
+#         return loss
 
 def train(variation, model_name, encoder, batch_size, epochs, lr):
     # Set device
@@ -125,14 +176,15 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
     # lambda_loss = 0.5
     # criterion_1 = SiLogLoss(lambd=lambda_loss)
     criterion = CombinedLoss(silog_lambda=0.5, 
-                             weight_silog=1.0, 
-                             weight_grad=0.5, 
-                             weight_ssim=0.5)
+                             weight_silog=0.5, 
+                             weight_grad=2.0, 
+                             weight_ssim=1.0,
+                             weight_l1=50.0)
 
     # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     start_lr_1 = 1e-8
     goal_lr_1 = lr*0.001
-    start_lr_2 = lr*0.0001
+    start_lr_2 = lr*0.001
     goal_lr_2 = lr # * 10.0
     optimizer = optim.AdamW([
                              {'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': start_lr_1},
@@ -154,8 +206,8 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
             return 1.0 - (1.0-perc_goal_lr) * ((epoch - start_epoch) / duration)  # linear runter auf 0.1
         else:
             return 1.0 - (1.0-0.0001) * min(((epoch - (start_epoch+duration)) / epochs), 1.0)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) #, eta_min=1e-6)
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
     
 
@@ -217,13 +269,24 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
 
 
         avg_val_loss = val_loss / len(val_loader)
+        loss_silog, loss_grad, loss_ssim, loss_l1 = criterion.get_avg_losses()
+        # weight_silog, weight_grad, weight_ssim = criterion.last_weights
         wandb.log({
             "val_loss": avg_val_loss,
             "epoch": epoch + 1,
             "lr encoder": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
             "lr decoder": optimizer.param_groups[1]['lr'],
+            "loss silog": loss_silog, 
+            "loss grad": loss_grad, 
+            "loss ssim": loss_ssim,
+            "loss L1": loss_l1,
+            "weight loss silog": criterion.weight_silog, 
+            "weight loss grad": criterion.weight_grad,
+            "weight loss ssim": criterion.weight_ssim,
+            "weight loss L1": criterion.weight_l1,
             "sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
         })
+        criterion.step(epoch)
 
         # Save model
         # if not best_model:
@@ -258,6 +321,11 @@ def train(variation, model_name, encoder, batch_size, epochs, lr):
         # Update learn rate
         if cur_iter >= warm_up_iters:
             scheduler.step()
+
+            # freeze encoder after warm up
+            for name, param in model.named_parameters():
+                if 'pretrained' in name:
+                    param.requires_grad = False
 
 
 if __name__ == "__main__":

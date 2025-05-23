@@ -41,7 +41,7 @@ wandb login your_api_key_here
 cd path/to/Depth_Anything_V2_Physgen
 conda activate phy_any
 
-nohup python train.py --variation sound_reflection --model_name phys_any_1 --encoder vitl --batch_size 20 --epochs 150 --lr 0.0001 > ./phys_any_1.log 2>&1 &
+nohup python train.py --variation sound_reflection --model_name phys_any_1 --encoder vitl --batch_size 20 --epochs 150 --lr 0.00005 > ./phys_any_1.log 2>&1 &
 ```
 
 Killing the process: `ps aux | grep train.py | grep -v grep | awk '{print $2}' | xargs kill -9`

@@ -42,15 +42,17 @@ def normalize_depth(depth):
     depth_max = depth.max()
     return (depth - depth_min) / (depth_max - depth_min + 1e-8)
 
-def inference_forward(input_img, model, device, scale_to_256=True):
+def inference_forward(input_img, model, device, scale_to_256=False):
     input_img = input_img.to(device)
     pred = model(input_img)
     
     # Normalize
-    pred = normalize_depth(pred).cpu()
+    # print(f"Min: {pred.min()}, Max: {pred.max()}")
+    pred = torch.clamp(pred, max=1.0)
+    # pred = normalize_depth(pred).cpu()
 
     # Combine Patches
-    pred = vutils.make_grid(pred, normalize=True)
+    pred = vutils.make_grid(pred, normalize=False)
 
     # Get RGB -> Gray
     # Weighting after Luma-Formel: 0.299*R + 0.587*G + 0.114*B
@@ -59,14 +61,14 @@ def inference_forward(input_img, model, device, scale_to_256=True):
     # pred = pred[2, :, :].unsqueeze(-1)    # -> just one Channel
 
     # To Numpy
-    pred = pred.detach().numpy()
+    pred = pred.cpu().detach().numpy()
 
     # Value Upscaling
     if scale_to_256:
-        pred = pred * 256
+        pred = pred * 255
 
     # Invert
-    # pred = np.abs(pred-256)
+    # pred = np.abs(pred-255)
 
     return pred
 
@@ -87,24 +89,24 @@ def inference(variation, model_name, encoder, save_only_result=False):
     
     # Create and clear output paths
     output_path = f"./eval/{model_name}"
-    os.makedirs(output_path, exist_ok=True)
     if os.path.exists(output_path):
         shutil.rmtree(output_path)
+    os.makedirs(output_path, exist_ok=True)
 
     output_pred_path = f"{output_path}/pred"
-    os.makedirs(output_pred_path, exist_ok=True)
     if os.path.exists(output_pred_path):
         shutil.rmtree(output_pred_path)
+    os.makedirs(output_pred_path, exist_ok=True)
 
     output_real_path = f"{output_path}/real"
-    os.makedirs(output_real_path, exist_ok=True)
     if os.path.exists(output_real_path):
         shutil.rmtree(output_real_path)
+    os.makedirs(output_real_path, exist_ok=True)
 
     output_osm_path = f"{output_path}/osm"
-    os.makedirs(output_osm_path, exist_ok=True)
     if os.path.exists(output_osm_path):
         shutil.rmtree(output_osm_path)
+    os.makedirs(output_osm_path, exist_ok=True)
 
     # load data
     dataset = PhysGenDataset(mode="test", variation=variation)
@@ -134,10 +136,41 @@ def inference(variation, model_name, encoder, save_only_result=False):
         # infer_img = inference_method(input_img, phys_anything, target_img.shape[2])
         forward_img = inference_forward(input_img, phys_anything, DEVICE)
         
-        print(f"Prediction shape [infer_image]: {infer_img.shape}")
-        print(f"Prediction shape [forward]: {forward_img.shape}")
+        # print(f"Prediction shape [infer_image]: {infer_img.shape}")
+        # print(f"Prediction shape [forward]: {forward_img.shape}")
+        # print(f"Prediction shape [osm]: {input_img.shape}")
+        # print(f"Prediction shape [target]: {target_img.shape}")
         
+        # print(f"OSM Info:\n    -> shape: {input_img.shape}\n    -> min: {input_img.min()}, max: {input_img.max()}")
+
         # phys = np.repeat(phys[..., np.newaxis], 3, axis=-1)
+
+        # Transform to Numpy
+        pred_img = forward_img.squeeze(2)
+        if not (0 <= pred_img.min() <= 255 and 0 <= pred_img.max() <=255):
+            raise ValueError(f"Prediction has values out of 0-256 range => min:{pred_img.min()}, max:{pred_img.max()}")
+        if pred_img.max() <= 1.0:
+            pred_img *= 255
+        pred_img = pred_img.astype(np.uint8)
+
+        real_img = target_img.squeeze(0).cpu().squeeze(0).detach().numpy()
+        if not (0 <= real_img.min() <= 255 and 0 <= real_img.max() <=255):
+            raise ValueError(f"Real target has values out of 0-256 range => min:{real_img.min()}, max:{real_img.max()}")
+        if real_img.max() <= 1.0:
+            real_img *= 255
+        real_img = real_img.astype(np.uint8)
+
+        if len(input_img.shape) == 4:
+            osm_img = input_img[0, 0].cpu().detach().numpy()
+        else:
+            osm_img = input_img[0].cpu().detach().numpy()
+        if not (0 <= osm_img.min() <= 255 and 0 <= osm_img.max() <=255):
+            raise ValueError(f"Real target has values out of 0-256 range => min:{osm_img.min()}, max:{osm_img.max()}")
+        if osm_img.max() <= 1.0:
+            osm_img *= 255
+        osm_img = osm_img.astype(np.uint8)
+
+        # print(f"OSM Info:\n    -> shape: {osm_img.shape}\n    -> min: {osm_img.min()}, max: {osm_img.max()}")
         
         # Save Results
         file_name = f"{model_name}_{idx}.png"
@@ -145,18 +178,18 @@ def inference(variation, model_name, encoder, save_only_result=False):
             save_img = os.path.join(output_path, file_name)
         else:
             save_img = os.path.join(output_pred_path, file_name)
-        cv2.imwrite(save_img, forward_img)
+        cv2.imwrite(save_img, pred_img)
         print(f"    -> saved pred at {save_img}")
 
         if not save_only_result:
             # save real image
             save_img = os.path.join(output_real_path, file_name)
-            cv2.imwrite(save_img, target_img.detach().numpy())   # works? right format?
+            cv2.imwrite(save_img, real_img)   # works? right format?
             print(f"    -> saved real at {save_img}")
 
             # save osm image
             save_img = os.path.join(output_osm_path, file_name)
-            cv2.imwrite(save_img, input_img.detach().numpy())   # works? right format?
+            cv2.imwrite(save_img, osm_img)   # works? right format?
             print(f"    -> saved osm at {save_img}")
 
 if __name__ == "__main__":

@@ -63,7 +63,7 @@ def resize_tensor_to_divisible_by_14(tensor: torch.Tensor) -> torch.Tensor:
 
 class PhysGenDataset(Dataset):
 
-    def __init__(self, variation="sound_baseline", mode="train"):
+    def __init__(self, variation="sound_baseline", mode="train", baseline_input=False):
         """
         Loads PhysGen Dataset.
 
@@ -77,7 +77,11 @@ class PhysGenDataset(Dataset):
         # get data
         self.dataset = load_dataset("mspitzna/physicsgen", name=variation, trust_remote_code=True)
         self.dataset = self.dataset[mode]
-        # self.dataset = dataset
+        
+        self.baseline_input = baseline_input
+        if baseline_input:
+            self.input_dataset = load_dataset("mspitzna/physicsgen", name="sound_baseline", trust_remote_code=True)
+            self.input_dataset = self.input_dataset[mode]
 
         self.transform = transforms.Compose([
             transforms.ToTensor(),  # Converts [0,255] PIL image to [0,1] FloatTensor
@@ -91,7 +95,10 @@ class PhysGenDataset(Dataset):
         sample = self.dataset[idx]
         # print(sample)
         # print(sample.keys())
-        input_img = sample["osm"]  # PIL Image
+        if self.baseline_input:
+            input_img = self.input_dataset[idx]["soundmap"]
+        else:
+            input_img = sample["osm"]  # PIL Image
         target_img = sample["soundmap"]  # PIL Image
 
         if self.transform:

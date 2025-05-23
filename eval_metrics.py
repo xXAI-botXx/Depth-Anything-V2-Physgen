@@ -165,8 +165,8 @@ def calculate_sight_error(true_path, pred_path, osm_path):
     not_in_sight_pred_soundmap = pred_soundmap.copy()
     
     #only get the pixels in sight
-    for x in range(256):
-        for y in range(256):
+    for x in range(in_sight_soundmap.shape[1]):
+        for y in range(in_sight_soundmap.shape[1]):
             if true_pixels_not_in_sight[y, x] == 0:
                 not_in_sight_soundmap[y, x] = -1
                 not_in_sight_pred_soundmap[y, x] = -1
