@@ -355,7 +355,10 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 for i, batch in enumerate(val_loader):
                     input_img, target_depth, _ = batch
                     input_img, target_depth = input_img.to(device), target_depth.to(device)
-                    pred_depth = model(input_img)
+                    if model_type == "complex_focus_only":
+                        pred_depth = model.forward_part(input_img, data_idx)
+                    else:
+                        pred_depth = model(input_img)
                     loss = criterion(pred_depth, target_depth) # criterion_1(pred_depth, target_depth) 
                     val_loss += loss.item()
 
