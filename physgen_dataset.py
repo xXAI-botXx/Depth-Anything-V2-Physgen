@@ -11,6 +11,8 @@ from PIL import Image
 
 from datasets import load_dataset
 
+import numpy as np
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
@@ -63,7 +65,7 @@ def resize_tensor_to_divisible_by_14(tensor: torch.Tensor) -> torch.Tensor:
 
 class PhysGenDataset(Dataset):
 
-    def __init__(self, variation="sound_baseline", mode="train", baseline_input=False):
+    def __init__(self, variation="sound_baseline", mode="train", input_type="osm", output_type="standard"):
         """
         Loads PhysGen Dataset.
 
@@ -72,16 +74,21 @@ class PhysGenDataset(Dataset):
             Chooses the used dataset variant: sound_baseline, sound_reflection, sound_diffraction, sound_combined.
         - mode : str
             Can be "train", "test", "eval".
+        - input_type : str
+            Defines the used Input -> "osm", "base_simulation"
+        - output_type : str
+            Defines the Output -> "standard", "complex_only"
         """
         self.device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
         # get data
         self.dataset = load_dataset("mspitzna/physicsgen", name=variation, trust_remote_code=True)
         self.dataset = self.dataset[mode]
         
-        self.baseline_input = baseline_input
-        if baseline_input:
-            self.input_dataset = load_dataset("mspitzna/physicsgen", name="sound_baseline", trust_remote_code=True)
-            self.input_dataset = self.input_dataset[mode]
+        self.input_type = input_type
+        self.output_type = output_type
+        if self.input_type == "base_simulation" or self.output_type == "complex_only":
+            self.basesimulation_dataset = load_dataset("mspitzna/physicsgen", name="sound_baseline", trust_remote_code=True)
+            self.basesimulation_dataset = self.basesimulation_dataset[mode]
 
         self.transform = transforms.Compose([
             transforms.ToTensor(),  # Converts [0,255] PIL image to [0,1] FloatTensor
@@ -95,15 +102,14 @@ class PhysGenDataset(Dataset):
         sample = self.dataset[idx]
         # print(sample)
         # print(sample.keys())
-        if self.baseline_input:
-            input_img = self.input_dataset[idx]["soundmap"]
+        if self.input_type == "base_simulation":
+            input_img = self.basesimulation_dataset[idx]["soundmap"]
         else:
             input_img = sample["osm"]  # PIL Image
         target_img = sample["soundmap"]  # PIL Image
 
-        if self.transform:
-            input_img = self.transform(input_img)
-            target_img = self.transform(target_img)
+        input_img = self.transform(input_img)
+        target_img = self.transform(target_img)
 
         # Fix real image size 512x512 > 256x256
         input_img = F.interpolate(input_img.unsqueeze(0), size=(256, 256), mode='bilinear', align_corners=False)
@@ -118,12 +124,10 @@ class PhysGenDataset(Dataset):
         if input_img.shape[0] == 1:  # shape (B, 1, H, W)
             input_img = input_img.repeat(3, 1, 1)  # make it (B, 3, H, W)
 
-        # add fake rgb
-        # if target_img.shape[0] == 1:  # shape (B, 1, H, W)
-        #     target_img = target_img.repeat(3, 1, 1)  # make it (B, 3, H, W)
-
-        # print(input_img.shape)
-        # print(target_img.shape)
+        if self.output_type == "complex_only":
+            base_simulation_img = resize_tensor_to_divisible_by_14(self.transform(self.basesimulation_dataset[idx]["soundmap"]))
+            target_img = torch.abs(target_img[0] - base_simulation_img[0])
+            target_img = target_img.unsqueeze(0)
 
         return input_img, target_img, idx
 

@@ -8,6 +8,7 @@ import cv2
 
 from physgen_dataset import PhysGenDataset
 from depth_anything_v2.dpt import DepthAnythingV2
+from cfo_model import ComplexFocusOnly
 
 import torch
 from torch.utils.data import DataLoader
@@ -83,7 +84,7 @@ def inference_method(input_img, model, size):
 
     return pred
 
-def inference(variation, model_name, encoder, save_only_result=False):
+def inference(variation, input_type, output_type, model_name, model_type, encoder, save_only_result=False):
     exact_model_name = get_newest_model(model_name, path="./checkpoints")
     model_path = f"./checkpoints/{exact_model_name}"
     
@@ -109,21 +110,24 @@ def inference(variation, model_name, encoder, save_only_result=False):
     os.makedirs(output_osm_path, exist_ok=True)
 
     # load data
-    dataset = PhysGenDataset(mode="test", variation=variation)
+    dataset = PhysGenDataset(mode="test", variation=variation, input_type=input_type, output_type=output_type)
     data_len = len(dataset)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
 
     # load model
     DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     
-    model_configs = {
-        'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
-        'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
-        'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-        'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
-    }
-    
-    phys_anything = DepthAnythingV2(**model_configs[encoder])
+    if model_type == 'complex_focus_only':
+        phys_anything = ComplexFocusOnly(encoder)
+    else:
+        model_configs = {
+            'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+            'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+            'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+            'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
+        }
+        
+        phys_anything = DepthAnythingV2(**model_configs[encoder])
     phys_anything.load_state_dict(torch.load(model_path, map_location='cpu'))
     phys_anything = phys_anything.to(DEVICE).eval()
 
@@ -195,13 +199,19 @@ def inference(variation, model_name, encoder, save_only_result=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Inference arguments")
     parser.add_argument("--variation", help="Chooses the used dataset variant: sound_baseline, sound_reflection, sound_diffraction, sound_combined.")
+    parser.add_argument("--input_type", default="osm", help="Defines the used Input -> 'osm', 'base_simulation'")
+    parser.add_argument("--output_type", default="standard", help="Defines the Output -> 'standard', 'complex_only'")
     parser.add_argument("--model_name", help="Name of the model (without .pth) in the ./checkpoints folder.")
+    parser.add_argument("--model_type", default="depth_any", help="Type of model -> 'depth_any', 'complex_focus_only'")
     parser.add_argument("--encoder", default="vitb", choices=["vits", "vitb", "vitl", "vitg"])
     parser.add_argument("--save_only_result", action='store_true')
     args = parser.parse_args()
 
     inference(variation=args.variation, 
+              input_type=input_type,
+              output_type=output_type,
               model_name=args.model_name, 
+              model_type=args.model_type,
               encoder=args.encoder, 
               save_only_result=args.save_only_result
              )
