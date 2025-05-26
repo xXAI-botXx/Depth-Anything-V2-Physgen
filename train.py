@@ -272,32 +272,64 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                              weight_l1=10.0)
 
     # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    start_lr_1 = 1e-8
-    goal_lr_1 = lr*0.001
-    start_lr_2 = lr*0.001
-    goal_lr_2 = lr # * 10.0
-    optimizer = optim.AdamW([
-                             {'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': start_lr_1},
-                             {'params': [param for name, param in model.named_parameters() if 'pretrained' not in name], 'lr': start_lr_2}
-                            ], 
-                            lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
-    warm_up_iters = int(total_iters*0.05)
-    warm_up_blend_1 = np.linspace(start_lr_1, goal_lr_1, warm_up_iters)
-    warm_up_blend_2 = np.linspace(start_lr_2, goal_lr_2, warm_up_iters)
+    if model_type == "complex_focus_only":
+        # Base
+        base_start_lr_1 = 1e-8
+        base_goal_lr_1 = lr*0.001
+        base_start_lr_2 = lr*0.001
+        base_goal_lr_2 = lr # * 10.0
+        base_optimizer = optim.AdamW([
+                                {'params': [param for name, param in model.phys_anything_baseline.named_parameters() if 'pretrained' in name], 'lr': base_start_lr_1},
+                                {'params': [param for name, param in model.phys_anything_baseline.named_parameters() if 'pretrained' not in name], 'lr': base_start_lr_2}
+                                ], 
+                                lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
+        base_warm_up_iters = int(total_iters*0.05)
+        base_warm_up_blend_1 = np.linspace(base_start_lr_1, base_goal_lr_1, base_warm_up_iters)
+        base_warm_up_blend_2 = np.linspace(base_start_lr_2, base_goal_lr_2, base_warm_up_iters)
+        base_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(base_optimizer, T_max=epochs, eta_min=1e-6)
 
-    # create schedular
-    def lr_lambda(epoch):
-        perc_goal_lr = 0.05  # x% of the original lr
-        start_epoch = 5
-        duration = 5.0
-        if epoch < start_epoch:
-            return 1.0
-        elif start_epoch <= epoch < (start_epoch+duration):
-            return 1.0 - (1.0-perc_goal_lr) * ((epoch - start_epoch) / duration)  # linear runter auf 0.1
-        else:
-            return 1.0 - (1.0-0.0001) * min(((epoch - (start_epoch+duration)) / epochs), 1.0)
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
+        # Complex
+        complex_start_lr_1 = 1e-8
+        complex_goal_lr_1 = lr*0.001
+        complex_start_lr_2 = lr*0.1
+        complex_goal_lr_2 = lr # * 10.0
+        complex_optimizer = optim.AdamW([
+                                {'params': [param for name, param in model.phys_anything_complex.named_parameters() if 'pretrained' in name], 'lr': complex_start_lr_1},
+                                {'params': [param for name, param in model.phys_anything_complex.named_parameters() if 'pretrained' not in name], 'lr':complex_start_lr_2}
+                                ], 
+                                lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
+        complex_warm_up_iters = int(total_iters*0.05)
+        complex_warm_up_blend_1 = np.linspace(complex_start_lr_1, complex_goal_lr_1, complex_warm_up_iters)
+        complex_warm_up_blend_2 = np.linspace(complex_start_lr_2, complex_goal_lr_2, complex_warm_up_iters)
+        complex_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(complex_optimizer, T_max=epochs, eta_min=1e-6)
+
+        # Fusion
+        fusion_start_lr = 1e-8
+        fusion_goal_lr = lr*0.001
+        fusion_optimizer = optim.AdamW(model.fusion_head.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
+        fusion_warm_up_iters = int(total_iters*0.05)
+        fusion_warm_up_blend = np.linspace(fusion_start_lr, fusion_goal_lr, fusion_warm_up_iters)
+        fusion_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(fusion_optimizer, T_max=epochs, eta_min=1e-6)
+
+        optimizer = [base_optimizer, complex_optimizer, fusion_optimizer]
+        warm_up_blend = [(base_warm_up_blend_1, base_warm_up_blend_2), (complex_warm_up_blend_1, complex_warm_up_blend_2), fusion_warm_up_blend]
+        all_warm_up_iters = [base_warm_up_iters, complex_warm_up_iters, fusion_warm_up_iters]
+    else:
+        start_lr_1 = 1e-8
+        goal_lr_1 = lr*0.001
+        start_lr_2 = lr*0.001
+        goal_lr_2 = lr # * 10.0
+        optimizer = optim.AdamW([
+                                {'params': [param for name, param in model.named_parameters() if 'pretrained' in name], 'lr': start_lr_1},
+                                {'params': [param for name, param in model.named_parameters() if 'pretrained' not in name], 'lr': start_lr_2}
+                                ], 
+                                lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
+        warm_up_iters = int(total_iters*0.05)
+        warm_up_blend_1 = np.linspace(start_lr_1, goal_lr_1, warm_up_iters)
+        warm_up_blend_2 = np.linspace(start_lr_2, goal_lr_2, warm_up_iters)
+
+        # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
 
     
 
@@ -327,20 +359,37 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 target_depth = target_depth.squeeze(1)
                 input_img, target_depth = input_img.to(device), target_depth.to(device)
 
-                optimizer.zero_grad()
+                if model_type == "complex_focus_only":
+                    optimizer[data_idx].zero_grad()
+                else:
+                    optimizer.zero_grad()
                 if model_type == "complex_focus_only":
                     pred_depth = model.forward_part(input_img, data_idx)
                 else:
                     pred_depth = model(input_img)
                 loss = criterion(pred_depth, target_depth) # criterion_1(pred_depth, target_depth)
                 loss.backward()
-                optimizer.step()
+                if model_type == "complex_focus_only":
+                    optimizer[data_idx].step()
+                else:
+                    optimizer.step()
 
                 running_loss += loss.item()
 
+                if model_type == "complex_focus_only":
+                    warm_up_iters = all_warm_up_iters[data_idx]
                 if cur_iter < warm_up_iters:
-                    optimizer.param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
-                    optimizer.param_groups[1]['lr'] = warm_up_blend_2[cur_iter]
+                    if model_type == "complex_focus_only":
+                        if data_idx < 2:
+                            warm_up_blend_1, warm_up_blend_2 = warm_up_blend[data_idx]
+                            optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
+                            optimizer[data_idx].param_groups[1]['lr'] = warm_up_blend_2[cur_iter]
+                        else:
+                            warm_up_blend_1 = warm_up_blend[data_idx]
+                            optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
+                    else:
+                        optimizer.param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
+                        optimizer.param_groups[1]['lr'] = warm_up_blend_2[cur_iter]
                 
                 cur_iter += 1
 
@@ -364,27 +413,51 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
                     if i == 0:
                         # Log first batch images
-                        val_img_log = inference_forward(input_img, model, device, scale_to_256=True)
+                        if model_type == "complex_focus_only":
+                            val_img_log = inference_forward(input_img, lambda x:model.forward_part(x, data_idx), device, scale_to_256=True)
+                        else:
+                            val_img_log = inference_forward(input_img, model, device, scale_to_256=True)
 
 
             avg_val_loss = val_loss / len(val_loader)
             loss_silog, loss_grad, loss_ssim, loss_l1 = criterion.get_avg_losses()
             # weight_silog, weight_grad, weight_ssim = criterion.last_weights
-            wandb.log({
-                f"{data_idx}_val_loss": avg_val_loss,
-                f"{data_idx}_epoch": epoch + 1,
-                f"{data_idx}_lr encoder": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
-                f"{data_idx}_lr decoder": optimizer.param_groups[1]['lr'],
-                f"{data_idx}_loss silog": loss_silog, 
-                f"{data_idx}_loss grad": loss_grad, 
-                f"{data_idx}_loss ssim": loss_ssim,
-                f"{data_idx}_loss L1": loss_l1,
-                f"{data_idx}_weight loss silog": criterion.weight_silog, 
-                f"{data_idx}_weight loss grad": criterion.weight_grad,
-                f"{data_idx}_weight loss ssim": criterion.weight_ssim,
-                f"{data_idx}_weight loss L1": criterion.weight_l1,
-                f"{data_idx}_sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
-            })
+            if model_type == "complex_focus_only":
+                cur_optimizer = optimizer[data_idx]
+            else:
+                cur_optimizer = optimizer
+
+            if model_type == "complex_focus_only" and data_idx < 2:
+                wandb.log({
+                    f"{data_idx}_val_loss": avg_val_loss,
+                    f"{data_idx}_epoch": epoch + 1,
+                    f"{data_idx}_lr encoder": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
+                    f"{data_idx}_lr decoder": optimizer.param_groups[1]['lr'],
+                    f"{data_idx}_loss silog": loss_silog, 
+                    f"{data_idx}_loss grad": loss_grad, 
+                    f"{data_idx}_loss ssim": loss_ssim,
+                    f"{data_idx}_loss L1": loss_l1,
+                    f"{data_idx}_weight loss silog": criterion.weight_silog, 
+                    f"{data_idx}_weight loss grad": criterion.weight_grad,
+                    f"{data_idx}_weight loss ssim": criterion.weight_ssim,
+                    f"{data_idx}_weight loss L1": criterion.weight_l1,
+                    f"{data_idx}_sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
+                })
+            else:
+                wandb.log({
+                    f"{data_idx}_val_loss": avg_val_loss,
+                    f"{data_idx}_epoch": epoch + 1,
+                    f"{data_idx}_lr": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
+                    f"{data_idx}_loss silog": loss_silog, 
+                    f"{data_idx}_loss grad": loss_grad, 
+                    f"{data_idx}_loss ssim": loss_ssim,
+                    f"{data_idx}_loss L1": loss_l1,
+                    f"{data_idx}_weight loss silog": criterion.weight_silog, 
+                    f"{data_idx}_weight loss grad": criterion.weight_grad,
+                    f"{data_idx}_weight loss ssim": criterion.weight_ssim,
+                    f"{data_idx}_weight loss L1": criterion.weight_l1,
+                    f"{data_idx}_sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
+                })
 
             if data_idx == len(datasets)-1:
                 criterion.step(epoch)
@@ -410,7 +483,12 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
                 # Update learn rate
                 if cur_iter >= warm_up_iters:
-                    scheduler.step()
+                    if model_type == "complex_focus_only":
+                        base_scheduler.step()
+                        complex_scheduler.step()
+                        fusion_scheduler.step()
+                    else:
+                        scheduler.step()
 
                     # freeze encoder after warm up
                     for name, param in model.named_parameters():
