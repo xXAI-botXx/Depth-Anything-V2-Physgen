@@ -27,7 +27,8 @@ class ConvBlock(nn.Module):
         
         self.conv_block = nn.Sequential(
             nn.Conv2d(in_feature, out_feature, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(out_feature),
+            # nn.BatchNorm2d(out_feature),
+            nn.GroupNorm(num_groups=16, num_channels=out_feature),
             nn.ReLU(True)
         )
     

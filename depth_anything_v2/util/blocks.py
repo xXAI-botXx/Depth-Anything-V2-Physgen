@@ -47,8 +47,8 @@ class ResidualConvUnit(nn.Module):
         self.conv2 = nn.Conv2d(features, features, kernel_size=3, stride=1, padding=1, bias=True, groups=self.groups)
 
         if self.bn == True:
-            self.bn1 = nn.BatchNorm2d(features)
-            self.bn2 = nn.BatchNorm2d(features)
+            self.bn1 = nn.GroupNorm(num_groups=16, num_channels=features), # nn.BatchNorm2d(features)
+            self.bn2 = nn.GroupNorm(num_groups=16, num_channels=out_feature) # nn.BatchNorm2d(features)
 
         self.activation = activation
 

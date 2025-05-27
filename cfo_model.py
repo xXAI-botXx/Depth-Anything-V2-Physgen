@@ -4,6 +4,15 @@ import torch.nn as nn
 
 from depth_anything_v2.dpt import DepthAnythingV2
 
+def init_decoder_weights(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+
 class FusionHead(nn.Module):
     def __init__(self, input_channels, hidden_size=64):
         super(FusionHead, self).__init__()
@@ -28,10 +37,12 @@ class ComplexFocusOnly(nn.Module):
                         }
         
         self.phys_anything_baseline = DepthAnythingV2(**model_configs[encoder])
+        # self.phys_anything_baseline.depth_head.apply(init_decoder_weights)
         # if self.baseline_model_path:
         #     self.phys_anything_baseline.load_state_dict(torch.load(self.baseline_model_path, map_location='cpu'))
 
         self.phys_anything_complex = DepthAnythingV2(**model_configs[encoder])
+        # self.phys_anything_complex.depth_head.apply(init_decoder_weights)
         # if self.complex_model_path:
         #     self.phys_anything_complex.load_state_dict(torch.load(self.complex_model_path, map_location='cpu'))
 
@@ -119,6 +130,54 @@ class ComplexFocusOnly(nn.Module):
             pred = self.forward(x)
 
         return pred
+
+    def get_gradient_insight(self, idx):
+        """
+        Gives some values about the gradient. Call this function directly after loss.backward().
+
+        Idx:
+        0 = Base-Part
+        1 = Complex-Part
+        2 = Fusion-Part -> Uses also Base+Complex parts
+        """
+        if idx == 0:
+            model_name = "Baseline"
+            model = self.phys_anything_baseline
+        elif idx == 1:
+            model_name = "Complex"
+            model = self.phys_anything_complex
+        else:
+            model_name = "Fusion Head"
+            model = self.fusion_head
+
+        gradient_mean = 0
+        gradient_min = 0
+        gradient_max = 0
+        requires_grad = 0
+        nan_or_inf = 0
+        requires_grad_but_no_forward_pass = 0
+        counter = 0
+        all_values = 0
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                gradient_mean += param.grad.mean().item()
+                gradient_min += param.grad.min().item()
+                gradient_max += param.grad.max().item()
+                counter += 1
+            else:
+                nan_or_inf += 1
+            requires_grad += int(param.requires_grad)
+            all_values += 1
+
+            if param.requires_grad and param.grad is None:
+                requires_grad_but_no_forward_pass += 1
+        print(f"Gradient Insight ({model_name}):\
+                                \n    - grad mean = {gradient_mean/counter:0.12f}\
+                                \n    - min = {gradient_min/counter:0.12f}\
+                                \n    - max = {gradient_max/counter:0.12f}\
+                                \n    - requires_grad = {int((requires_grad/all_values)*100)}% ({requires_grad})\
+                                \n    - nans/infs = {int((nan_or_inf/all_values)*100)}% ({nan_or_inf})\
+                                \n    - requires grad but no forward pass = {int((requires_grad_but_no_forward_pass/all_values)*100)}% ({requires_grad_but_no_forward_pass})")
 
 
 

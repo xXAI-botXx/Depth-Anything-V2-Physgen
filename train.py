@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+import torchvision.models as models
+from torchvision import transforms
 
 from physgen_dataset import PhysGenDataset
 from depth_anything_v2.dpt import DepthAnythingV2
@@ -19,14 +21,63 @@ import torchvision.utils as vutils
 
 import kornia  # for SSIM and gradients
 
+class PerceptualLoss(nn.Module):
+    def __init__(self, layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda'):
+        super().__init__()
+        vgg = models.vgg16(pretrained=True).features.to(device).eval()
+        self.device = device
+
+        self.layer_map = {
+            'relu1_2': 3,
+            'relu2_2': 8,
+            'relu3_3': 15,
+            'relu4_3': 22,
+            'relu5_3': 29,
+        }
+        self.selected_layers = layers
+        self.vgg_slices = nn.Sequential(*list(vgg.children())[:self.layer_map[layers[-1]] + 1])
+        for param in self.vgg_slices.parameters():
+            param.requires_grad = False
+
+        self.criterion = nn.MSELoss()
+
+        self.normalization = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                  std=[0.229, 0.224, 0.225])
+
+    def _preprocess(self, img):
+        # Expect img to be (B, 1, H, W), grayscale in [0,1]
+        if len(img.shape) == 2:
+            img = img.unsqueeze(0).unsqueeze(0)
+        if len(img.shape) == 3:
+            img = img.unsqueeze(1)
+        if img.shape[1] == 1:
+            img = img.repeat(1, 3, 1, 1)  # Convert to 3 channels
+        img = torch.stack([self.normalization(i) for i in img])
+        return img
+
+    def forward(self, pred, target):
+        pred = self._preprocess(pred).to(self.device)
+        target = self._preprocess(target).to(self.device)
+
+        loss = 0.0
+        x = pred
+        y = target
+        for i, layer in enumerate(self.vgg_slices):
+            x = layer(x)
+            y = layer(y)
+            if i in [self.layer_map[l] for l in self.selected_layers]:
+                loss += self.criterion(x, y)
+        return loss
+
 class CombinedLoss(nn.Module):
     def __init__(self, 
                  silog_lambda=0.5, 
-                 weight_silog=1.0, 
-                 weight_grad=1.0, 
-                 weight_ssim=1.0,
-                 weight_edge_aware=1.0,
-                 weight_l1=1.0):
+                 weight_silog=0.5, 
+                 weight_grad=10.0, 
+                 weight_ssim=5.0,
+                 weight_edge_aware=10.0,
+                 weight_l1=1.0,
+                 weight_vgg=1.0):
         super().__init__()
         self.silog_lambda = silog_lambda
         self.weight_silog = weight_silog
@@ -34,23 +85,28 @@ class CombinedLoss(nn.Module):
         self.weight_ssim = weight_ssim
         self.weight_edge_aware = weight_edge_aware
         self.weight_l1 = weight_l1
+        self.weight_vgg = weight_vgg
 
         self.init_weight_silog = self.weight_silog
         self.init_weight_grad = self.weight_grad
         self.init_weight_ssim = self.weight_ssim
         self.init_weight_edge_aware = self.weight_edge_aware
         self.init_weight_l1 = self.weight_l1
+        self.init_weight_vgg = self.weight_vgg
 
         self.avg_loss_silog = 0
         self.avg_loss_grad = 0
         self.avg_loss_ssim = 0
         self.avg_loss_l1 = 0
+        self.avg_loss_vgg = 0
         self.avg_loss_edge_aware = 0
         self.steps = 0
 
         # Instantiate SSIMLoss module
         self.ssim_module = kornia.losses.SSIMLoss(window_size=11, reduction='mean')
         # self.ssim_module = kornia.losses.MS_SSIMLoss(reduction='mean')
+
+        self.vgg_loss = PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda')
 
 
     def silog_loss(self, pred, target):
@@ -108,7 +164,8 @@ class CombinedLoss(nn.Module):
         pred_grad_x *= torch.exp(-target_grad_x)
         pred_grad_y *= torch.exp(-target_grad_y)
 
-        return (pred_grad_y.abs().mean() + target_grad_y.abs().mean())
+        # return (pred_grad_y.abs().mean() + target_grad_y.abs().mean())
+        return (pred_grad_x.abs().mean() + pred_grad_y.abs().mean())
 
     def l1_loss(self, pred, target):
         loss = torch.abs(target - pred)
@@ -120,12 +177,14 @@ class CombinedLoss(nn.Module):
         loss_ssim = self.ssim_loss(pred, target)
         loss_l1 = self.l1_loss(pred, target)
         loss_edge_aware = self.edge_aware_loss(pred, target)
+        loss_vgg = self.vgg_loss(pred, target)
 
         self.avg_loss_silog += loss_silog
         self.avg_loss_grad += loss_grad
         self.avg_loss_ssim += loss_ssim
         self.avg_loss_l1 += loss_l1
         self.avg_loss_edge_aware += loss_edge_aware
+        self.avg_loss_vgg
         self.steps += 1
 
         total_loss = (
@@ -133,7 +192,8 @@ class CombinedLoss(nn.Module):
             self.weight_grad * loss_grad +
             self.weight_ssim * loss_ssim +
             self.weight_edge_aware * loss_edge_aware +
-            self.weight_l1 * loss_l1
+            self.weight_l1 * loss_l1 +
+            self.weight_vgg * loss_vgg
         )
         return total_loss
 
@@ -143,6 +203,7 @@ class CombinedLoss(nn.Module):
         self.avg_loss_ssim = 0
         self.avg_loss_l1 = 0
         self.avg_loss_edge_aware = 0
+        self.avg_loss_vgg = 0
         self.steps = 0
         
         # if 5 < epoch < 50:
@@ -162,7 +223,9 @@ class CombinedLoss(nn.Module):
         return (self.avg_loss_silog/self.steps,
                 self.avg_loss_grad/self.steps,
                 self.avg_loss_ssim/self.steps,
-                self.avg_loss_l1/self.steps)
+                self.avg_loss_l1/self.steps,
+                self.avg_loss_edge_aware/self.steps,
+                self.avg_loss_vgg/self.steps)
 
 # class LaplacianPyramidLoss(nn.Module):
 #     def __init__(self, max_levels=3):
@@ -264,12 +327,19 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
     # model.depth_head.parameters()
     # lambda_loss = 0.5
     # criterion_1 = SiLogLoss(lambd=lambda_loss)
-    criterion = CombinedLoss(silog_lambda=0.5, 
-                             weight_silog=5.0, 
-                             weight_grad=100.0, 
-                             weight_ssim=10.0,
-                             weight_edge_aware=100.0,
-                             weight_l1=10.0)
+    # criterion = CombinedLoss(silog_lambda=0.5, 
+    #                          weight_silog=5.0, 
+    #                          weight_grad=100.0, 
+    #                          weight_ssim=10.0,
+    #                          weight_edge_aware=100.0,
+    #                          weight_l1=10.0)
+    # combined_criterion = CombinedLoss(silog_lambda=0.5, 
+    #                          weight_silog=0.5, 
+    #                          weight_grad=10.0, 
+    #                          weight_ssim=5.0,
+    #                          weight_edge_aware=10.0,
+    #                          weight_l1=1.0)
+    # perceptual_criterion = PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda')
 
     # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     if model_type == "complex_focus_only":
@@ -291,14 +361,14 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
         # Complex
         complex_start_lr_1 = 1e-8
         complex_goal_lr_1 = lr*0.001
-        complex_start_lr_2 = lr*0.1
-        complex_goal_lr_2 = lr # * 10.0
+        complex_start_lr_2 = lr*0.001 # lr*1000.0
+        complex_goal_lr_2 = lr*10.0 # lr*1000.0
         complex_optimizer = optim.AdamW([
                                 {'params': [param for name, param in model.phys_anything_complex.named_parameters() if 'pretrained' in name], 'lr': complex_start_lr_1},
                                 {'params': [param for name, param in model.phys_anything_complex.named_parameters() if 'pretrained' not in name], 'lr':complex_start_lr_2}
                                 ], 
                                 lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
-        complex_warm_up_iters = int(total_iters*0.05)
+        complex_warm_up_iters = int(total_iters*0.01)
         complex_warm_up_blend_1 = np.linspace(complex_start_lr_1, complex_goal_lr_1, complex_warm_up_iters)
         complex_warm_up_blend_2 = np.linspace(complex_start_lr_2, complex_goal_lr_2, complex_warm_up_iters)
         complex_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(complex_optimizer, T_max=epochs, eta_min=1e-6)
@@ -314,6 +384,31 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
         optimizer = [base_optimizer, complex_optimizer, fusion_optimizer]
         warm_up_blend = [(base_warm_up_blend_1, base_warm_up_blend_2), (complex_warm_up_blend_1, complex_warm_up_blend_2), fusion_warm_up_blend]
         all_warm_up_iters = [base_warm_up_iters, complex_warm_up_iters, fusion_warm_up_iters]
+
+        # criterion = [PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda'), 
+        #              PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda'),
+        #              PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda')]
+        criterion = [CombinedLoss(silog_lambda=0.5, 
+                                  weight_silog=0.5, 
+                                  weight_grad=10.0, 
+                                  weight_ssim=5.0,
+                                  weight_edge_aware=10.0,
+                                  weight_l1=1.0,
+                                  weight_vgg=1.0),
+                     CombinedLoss(silog_lambda=0.5, 
+                                  weight_silog=0.0, 
+                                  weight_grad=0.0, 
+                                  weight_ssim=0.0,
+                                  weight_edge_aware=0.0,
+                                  weight_l1=100.0,
+                                  weight_vgg=0.0),
+                     CombinedLoss(silog_lambda=0.5, 
+                                  weight_silog=0.5, 
+                                  weight_grad=10.0, 
+                                  weight_ssim=5.0,
+                                  weight_edge_aware=10.0,
+                                  weight_l1=1.0,
+                                  weight_vgg=1.0)]
     else:
         start_lr_1 = 1e-8
         goal_lr_1 = lr*0.001
@@ -330,7 +425,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
         # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-
+        criterion = [criterion]
     
 
     # Initialize Weights & Biases
@@ -346,8 +441,17 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
     last_model = None
     cur_iter = 0
 
+    # Analyze errors
+    # torch.autograd.set_detect_anomaly(True)
+
     for epoch in range(epochs):
         for data_idx, (train_loader, val_loader) in enumerate(datasets):
+            # if data_idx != 1:
+            #     continue
+
+            if model_type == "complex_focus_only":
+                warm_up_iters = all_warm_up_iters[data_idx]
+
             model.train()
 
             if model_type == "complex_focus_only":
@@ -360,24 +464,31 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 input_img, target_depth = input_img.to(device), target_depth.to(device)
 
                 if model_type == "complex_focus_only":
-                    optimizer[data_idx].zero_grad()
+                    optimizer[data_idx].zero_grad()  # set gradients to 0
                 else:
-                    optimizer.zero_grad()
+                    optimizer.zero_grad()  # set gradients to 0
                 if model_type == "complex_focus_only":
+                    # print("Input min/max/nan:", input_img.min().item(), input_img.max().item(), torch.isnan(input_img).any())
                     pred_depth = model.forward_part(input_img, data_idx)
+                    # print("Output min/max/nan:", pred_depth.min().item(), pred_depth.max().item(), torch.isnan(pred_depth).any())
                 else:
                     pred_depth = model(input_img)
-                loss = criterion(pred_depth, target_depth) # criterion_1(pred_depth, target_depth)
-                loss.backward()
+                loss = criterion[data_idx](pred_depth, target_depth) # criterion_1(pred_depth, target_depth)
+                # print("Loss:", loss.item())
+                # print("Loss value:", loss.item(), "Is NaN:", torch.isnan(loss).item(), "Is Inf:", torch.isinf(loss).item())
+                loss.backward()  # calc gradients
+
                 if model_type == "complex_focus_only":
-                    optimizer[data_idx].step()
+                    if cur_iter < warm_up_iters:
+                        model.get_gradient_insight(data_idx)
+                    # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # limit gradient
+                    optimizer[data_idx].step()  # optimize weights with gradients
                 else:
-                    optimizer.step()
+                    # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # limit gradient
+                    optimizer.step()  # optimize weights with gradients
 
                 running_loss += loss.item()
 
-                if model_type == "complex_focus_only":
-                    warm_up_iters = all_warm_up_iters[data_idx]
                 if cur_iter < warm_up_iters:
                     if model_type == "complex_focus_only":
                         if data_idx < 2:
@@ -408,19 +519,28 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                         pred_depth = model.forward_part(input_img, data_idx)
                     else:
                         pred_depth = model(input_img)
-                    loss = criterion(pred_depth, target_depth) # criterion_1(pred_depth, target_depth) 
+                    loss = criterion[data_idx](pred_depth, target_depth) # criterion_1(pred_depth, target_depth) 
                     val_loss += loss.item()
 
                     if i == 0:
+                        print("Output mean:", pred_depth.mean().item())
+                        print("Output min:", pred_depth.min().item())
+                        print("Output max:", pred_depth.max().item())
+
                         # Log first batch images
                         if model_type == "complex_focus_only":
                             val_img_log = inference_forward(input_img, lambda x:model.forward_part(x, data_idx), device, scale_to_256=True)
                         else:
                             val_img_log = inference_forward(input_img, model, device, scale_to_256=True)
 
+                        if (val_img_log == 0).all():
+                            raise Exception("Prediction is completely black")
+                        if np.isnan(val_img_log).any():
+                            raise Exception("Prediction contains NaN values")
+
 
             avg_val_loss = val_loss / len(val_loader)
-            loss_silog, loss_grad, loss_ssim, loss_l1 = criterion.get_avg_losses()
+            loss_silog, loss_grad, loss_ssim, loss_l1, loss_edge_aware, loss_vgg = criterion[data_idx].get_avg_losses()
             # weight_silog, weight_grad, weight_ssim = criterion.last_weights
             if model_type == "complex_focus_only":
                 cur_optimizer = optimizer[data_idx]
@@ -431,36 +551,44 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 wandb.log({
                     f"{data_idx}_val_loss": avg_val_loss,
                     f"{data_idx}_epoch": epoch + 1,
-                    f"{data_idx}_lr encoder": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
-                    f"{data_idx}_lr decoder": optimizer.param_groups[1]['lr'],
+                    f"{data_idx}_lr encoder": cur_optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
+                    f"{data_idx}_lr decoder": cur_optimizer.param_groups[1]['lr'],
                     f"{data_idx}_loss silog": loss_silog, 
                     f"{data_idx}_loss grad": loss_grad, 
                     f"{data_idx}_loss ssim": loss_ssim,
                     f"{data_idx}_loss L1": loss_l1,
-                    f"{data_idx}_weight loss silog": criterion.weight_silog, 
-                    f"{data_idx}_weight loss grad": criterion.weight_grad,
-                    f"{data_idx}_weight loss ssim": criterion.weight_ssim,
-                    f"{data_idx}_weight loss L1": criterion.weight_l1,
+                    f"{data_idx}_loss edge aware": loss_edge_aware,
+                    f"{data_idx}_loss vgg": loss_vgg,
+                    f"{data_idx}_weight loss silog": criterion[data_idx].weight_silog, 
+                    f"{data_idx}_weight loss grad": criterion[data_idx].weight_grad,
+                    f"{data_idx}_weight loss ssim": criterion[data_idx].weight_ssim,
+                    f"{data_idx}_weight loss L1": criterion[data_idx].weight_l1,
+                    f"{data_idx}_weight loss edge aware": criterion[data_idx].weight_edge_aware,
+                    f"{data_idx}_weight vgg": criterion[data_idx].weight_vgg,
                     f"{data_idx}_sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
                 })
             else:
                 wandb.log({
                     f"{data_idx}_val_loss": avg_val_loss,
                     f"{data_idx}_epoch": epoch + 1,
-                    f"{data_idx}_lr": optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
+                    f"{data_idx}_lr": cur_optimizer.param_groups[0]['lr'], # scheduler.get_last_lr()[0],
                     f"{data_idx}_loss silog": loss_silog, 
                     f"{data_idx}_loss grad": loss_grad, 
                     f"{data_idx}_loss ssim": loss_ssim,
                     f"{data_idx}_loss L1": loss_l1,
-                    f"{data_idx}_weight loss silog": criterion.weight_silog, 
-                    f"{data_idx}_weight loss grad": criterion.weight_grad,
-                    f"{data_idx}_weight loss ssim": criterion.weight_ssim,
-                    f"{data_idx}_weight loss L1": criterion.weight_l1,
+                    f"{data_idx}_loss edge aware": loss_edge_aware,
+                    f"{data_idx}_loss vgg": loss_vgg,
+                    f"{data_idx}_weight loss silog": criterion[data_idx].weight_silog, 
+                    f"{data_idx}_weight loss grad": criterion[data_idx].weight_grad,
+                    f"{data_idx}_weight loss ssim": criterion[data_idx].weight_ssim,
+                    f"{data_idx}_weight loss L1": criterion[data_idx].weight_l1,
+                    f"{data_idx}_weight loss edge aware": criterion[data_idx].weight_edge_aware,
+                    f"{data_idx}_weight vgg": criterion[data_idx].weight_vgg,
                     f"{data_idx}_sample_depth_map": wandb.Image(val_img_log) if val_img_log is not None else None
                 })
 
             if data_idx == len(datasets)-1:
-                criterion.step(epoch)
+                criterion[data_idx].step(epoch)
 
                 # Save model
                 if last_model:
