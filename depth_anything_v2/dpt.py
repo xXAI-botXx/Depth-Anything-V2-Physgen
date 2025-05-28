@@ -181,6 +181,9 @@ class DepthAnythingV2(nn.Module):
         
         depth = self.depth_head(features, patch_h, patch_w)
         depth = F.relu(depth)
+
+        # Value Prediction: 0.0 - 1.0
+        depth = torch.sigmoid(depth)
         
         return depth.squeeze(1)
     

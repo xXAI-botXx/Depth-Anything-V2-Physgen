@@ -126,8 +126,12 @@ class PhysGenDataset(Dataset):
 
         if self.output_type == "complex_only":
             base_simulation_img = resize_tensor_to_divisible_by_14(self.transform(self.basesimulation_dataset[idx]["soundmap"]))
-            target_img = torch.abs(target_img[0] - base_simulation_img[0])
+            # target_img = torch.abs(target_img[0] - base_simulation_img[0])
+            target_img = target_img[0] - base_simulation_img[0]
             target_img = target_img.unsqueeze(0)
+            target_img *= -2
+            # target_img = torch.log1p(target_img)
+            # target_img *= 100
 
         return input_img, target_img, idx
 

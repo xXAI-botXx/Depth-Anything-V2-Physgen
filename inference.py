@@ -43,13 +43,17 @@ def normalize_depth(depth):
     depth_max = depth.max()
     return (depth - depth_min) / (depth_max - depth_min + 1e-8)
 
-def inference_forward(input_img, model, device, scale_to_256=False):
+def inference_forward(input_img, model, device, scale_to_256=False, clip=False, prenorm_255=False):
     input_img = input_img.to(device)
     pred = model(input_img)
+
+    # if prenorm_255:
+    #     pred = (pred - 0.0) / (255.0 - 0.0)
     
     # Normalize
     # print(f"Min: {pred.min()}, Max: {pred.max()}")
-    pred = torch.clamp(pred, max=1.0)
+    if clip:
+        pred = torch.clamp(pred, max=1.0, min=0.0)
     # pred = normalize_depth(pred).cpu()
 
     # Combine Patches
@@ -67,9 +71,6 @@ def inference_forward(input_img, model, device, scale_to_256=False):
     # Value Upscaling
     if scale_to_256:
         pred = pred * 255
-
-    # Invert
-    # pred = np.abs(pred-255)
 
     return pred
 

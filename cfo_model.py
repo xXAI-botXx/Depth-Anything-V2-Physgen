@@ -23,7 +23,7 @@ class FusionHead(nn.Module):
         )
 
     def forward(self, x):
-        return self.fusion(x)
+        return torch.sigmoid(self.fusion(x))
 
 class ComplexFocusOnly(nn.Module):
     def __init__(self, encoder):
@@ -54,6 +54,7 @@ class ComplexFocusOnly(nn.Module):
         base_x = self.phys_anything_baseline(x).unsqueeze(1)  # shape: [B, 1, H, W]
         # print(f"base_x.shape = {base_x.shape}")
         complex_x = self.phys_anything_complex(x).unsqueeze(1)  # shape: [B, 1, H, W]
+        # complex_x = (complex_x - 0.0) / (255.0 - 0.0)
         # print(f"complex_x.shape = {complex_x.shape}")
 
         combined = torch.cat([base_x, complex_x], dim=1)  # shape: [B, 2, H, W]

@@ -389,26 +389,26 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
         #              PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda'),
         #              PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda')]
         criterion = [CombinedLoss(silog_lambda=0.5, 
-                                  weight_silog=0.5, 
-                                  weight_grad=10.0, 
-                                  weight_ssim=5.0,
-                                  weight_edge_aware=10.0,
+                                  weight_silog=1.0, 
+                                  weight_grad=50.0, 
+                                  weight_ssim=1.0,
+                                  weight_edge_aware=50.0,
                                   weight_l1=1.0,
-                                  weight_vgg=1.0),
+                                  weight_vgg=10.0),
                      CombinedLoss(silog_lambda=0.5, 
-                                  weight_silog=0.0, 
-                                  weight_grad=0.0, 
-                                  weight_ssim=0.0,
-                                  weight_edge_aware=0.0,
-                                  weight_l1=100.0,
-                                  weight_vgg=0.0),
-                     CombinedLoss(silog_lambda=0.5, 
-                                  weight_silog=0.5, 
-                                  weight_grad=10.0, 
-                                  weight_ssim=5.0,
-                                  weight_edge_aware=10.0,
+                                  weight_silog=1.0, 
+                                  weight_grad=50.0, 
+                                  weight_ssim=1.0,
+                                  weight_edge_aware=50.0,
                                   weight_l1=1.0,
-                                  weight_vgg=1.0)]
+                                  weight_vgg=10.0),
+                     CombinedLoss(silog_lambda=0.5, 
+                                  weight_silog=1.0, 
+                                  weight_grad=50.0, 
+                                  weight_ssim=1.0,
+                                  weight_edge_aware=50.0,
+                                  weight_l1=1.0,
+                                  weight_vgg=10.0)]
     else:
         start_lr_1 = 1e-8
         goal_lr_1 = lr*0.001
@@ -425,7 +425,13 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
         # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-        criterion = [criterion]
+        criterion = [CombinedLoss(silog_lambda=0.5, 
+                                  weight_silog=0.5, 
+                                  weight_grad=10.0, 
+                                  weight_ssim=5.0,
+                                  weight_edge_aware=10.0,
+                                  weight_l1=1.0,
+                                  weight_vgg=1.0)]
     
 
     # Initialize Weights & Biases
@@ -439,15 +445,18 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
     wandb.watch(model, log="all")
 
     last_model = None
-    cur_iter = 0
+    global_cur_iter = [0]*len(criterion)
 
     # Analyze errors
     # torch.autograd.set_detect_anomaly(True)
 
     for epoch in range(epochs):
         for data_idx, (train_loader, val_loader) in enumerate(datasets):
-            # if data_idx != 1:
-            #     continue
+            # Start Learning Fusion head after 6 epochs
+            if data_idx == 2 and epoch <= epochs*0.8:
+                continue
+            elif data_idx in [0, 1] and epoch > epochs*0.8:
+                continue
 
             if model_type == "complex_focus_only":
                 warm_up_iters = all_warm_up_iters[data_idx]
@@ -479,7 +488,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 loss.backward()  # calc gradients
 
                 if model_type == "complex_focus_only":
-                    if cur_iter < warm_up_iters:
+                    if global_cur_iter[data_idx] < warm_up_iters:
                         model.get_gradient_insight(data_idx)
                     # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # limit gradient
                     optimizer[data_idx].step()  # optimize weights with gradients
@@ -489,20 +498,20 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
                 running_loss += loss.item()
 
-                if cur_iter < warm_up_iters:
+                if global_cur_iter[data_idx] < warm_up_iters:
                     if model_type == "complex_focus_only":
                         if data_idx < 2:
                             warm_up_blend_1, warm_up_blend_2 = warm_up_blend[data_idx]
-                            optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
-                            optimizer[data_idx].param_groups[1]['lr'] = warm_up_blend_2[cur_iter]
+                            optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[global_cur_iter[data_idx]]
+                            optimizer[data_idx].param_groups[1]['lr'] = warm_up_blend_2[global_cur_iter[data_idx]]
                         else:
                             warm_up_blend_1 = warm_up_blend[data_idx]
-                            optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
+                            optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[global_cur_iter[data_idx]]
                     else:
-                        optimizer.param_groups[0]['lr'] = warm_up_blend_1[cur_iter]
-                        optimizer.param_groups[1]['lr'] = warm_up_blend_2[cur_iter]
+                        optimizer.param_groups[0]['lr'] = warm_up_blend_1[global_cur_iter[data_idx]]
+                        optimizer.param_groups[1]['lr'] = warm_up_blend_2[global_cur_iter[data_idx]]
                 
-                cur_iter += 1
+                global_cur_iter[data_idx] += 1
 
             avg_train_loss = running_loss / len(train_loader)
             wandb.log({"train_loss": avg_train_loss, "epoch": epoch + 1})
@@ -523,20 +532,22 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                     val_loss += loss.item()
 
                     if i == 0:
-                        print("Output mean:", pred_depth.mean().item())
-                        print("Output min:", pred_depth.min().item())
-                        print("Output max:", pred_depth.max().item())
+                        print(f"Output mean (model-part {data_idx}): {pred_depth.mean().item()}")
+                        print(f"Output min (model-part {data_idx}): {pred_depth.min().item()}")
+                        print(f"Output max (model-part {data_idx}): {pred_depth.max().item()}")
 
                         # Log first batch images
                         if model_type == "complex_focus_only":
-                            val_img_log = inference_forward(input_img, lambda x:model.forward_part(x, data_idx), device, scale_to_256=True)
+                            # clip = data_idx == 1
+                            prenorm_255 = data_idx == 1
+                            val_img_log = inference_forward(input_img, lambda x:model.forward_part(x, data_idx), device, scale_to_256=True, clip=True, prenorm_255=prenorm_255)
                         else:
                             val_img_log = inference_forward(input_img, model, device, scale_to_256=True)
 
-                        if (val_img_log == 0).all():
-                            raise Exception("Prediction is completely black")
-                        if np.isnan(val_img_log).any():
-                            raise Exception("Prediction contains NaN values")
+                        # if (val_img_log == 0).all():
+                        #     raise Exception("Prediction is completely black")
+                        # if np.isnan(val_img_log).any():
+                        #     raise Exception("Prediction contains NaN values")
 
 
             avg_val_loss = val_loss / len(val_loader)
@@ -610,7 +621,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 print(f"Saved model at {save_path}")
 
                 # Update learn rate
-                if cur_iter >= warm_up_iters:
+                if global_cur_iter[data_idx] >= warm_up_iters:
                     if model_type == "complex_focus_only":
                         base_scheduler.step()
                         complex_scheduler.step()
