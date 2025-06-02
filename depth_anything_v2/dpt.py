@@ -12,7 +12,7 @@ from .util.transform import Resize, NormalizeImage, PrepareForNet
 def _make_fusion_block(features, use_bn, size=None):
     return FeatureFusionBlock(
         features,
-        nn.ReLU(False),
+        nn.LeakyReLU(0.1),  # nn.Sigmoid(),  # nn.ReLU(False),
         deconv=False,
         bn=use_bn,
         expand=False,
@@ -29,7 +29,7 @@ class ConvBlock(nn.Module):
             nn.Conv2d(in_feature, out_feature, kernel_size=3, stride=1, padding=1),
             # nn.BatchNorm2d(out_feature),
             nn.GroupNorm(num_groups=16, num_channels=out_feature),
-            nn.ReLU(True)
+            nn.LeakyReLU(0.1) # nn.Sigmoid() # nn.ReLU(True)
         )
     
     def forward(self, x):
@@ -109,9 +109,9 @@ class DPTHead(nn.Module):
         self.scratch.output_conv1 = nn.Conv2d(head_features_1, head_features_1 // 2, kernel_size=3, stride=1, padding=1)
         self.scratch.output_conv2 = nn.Sequential(
             nn.Conv2d(head_features_1 // 2, head_features_2, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2),  # nn.GELU(), # nn.Sigmoid(), # nn.ReLU(True),
             nn.Conv2d(head_features_2, 1, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.1),  # nn.GELU(),  # nn.Sigmoid(), # nn.ReLU(True),
             nn.Identity(),
         )
     
@@ -180,10 +180,15 @@ class DepthAnythingV2(nn.Module):
         features = self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
         
         depth = self.depth_head(features, patch_h, patch_w)
-        depth = F.relu(depth)
+        # depth = F.relu(depth)
 
         # Value Prediction: 0.0 - 1.0
-        depth = torch.sigmoid(depth)
+        # depth = F.relu(depth)
+        # depth = torch.sigmoid(depth)
+        # depth = torch.clamp(depth, 0, 2) * 0.5
+        depth = torch.clamp(depth, 0.0, 1.0)
+        # depth = torch.clamp(depth, -0.1, 1.1)
+        # depth = torch.sigmoid(depth * 0.5)
         
         return depth.squeeze(1)
     
