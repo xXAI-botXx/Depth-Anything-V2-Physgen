@@ -23,7 +23,10 @@ class FusionHead(nn.Module):
         )
 
     def forward(self, x):
-        return torch.sigmoid(self.fusion(x))
+        pred = self.fusion(x)
+        pred = torch.clamp(pred, 0.0, 1.0)
+        # pred = torch.sigmoid(pred)
+        return pred
 
 class ComplexFocusOnly(nn.Module):
     def __init__(self, encoder):
@@ -57,8 +60,15 @@ class ComplexFocusOnly(nn.Module):
         # complex_x = (complex_x - 0.0) / (255.0 - 0.0)
         # print(f"complex_x.shape = {complex_x.shape}")
 
+        # formular:
+        #   complex = (target - base) * -2
+        #   complex*(-0.5) = target - base
+        #   target = (complex*(-0.5)) + base
+        pred = (complex_x*(-0.5)) + base_x
+
+        # or:
         combined = torch.cat([base_x, complex_x], dim=1)  # shape: [B, 2, H, W]
-        # print(f"combined.shape = {combined.shape}")
+        # # # print(f"combined.shape = {combined.shape}")
         pred = self.fusion_head(combined)
         if len(pred.shape) == 4:
             pred = pred.squeeze(1)

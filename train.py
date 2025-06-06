@@ -1112,7 +1112,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 
     # Prepare dataset
-    if model_type == "complex_focus_only":
+    if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
         train_dataset_base = PhysGenDataset(mode='train', variation="sound_baseline", input_type="osm", output_type="standard")
         val_dataset_base = PhysGenDataset(mode='validation', variation="sound_baseline", input_type="osm", output_type="standard")
         train_loader_base = DataLoader(train_dataset_base, batch_size=batch_size, shuffle=True, num_workers=4)
@@ -1135,7 +1135,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
         datasets = [(train_loader, val_loader)]
 
-    if model_type == "complex_focus_only":
+    if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
         total_iters = epochs * sum(len(loader) for loader, _ in datasets)
     else:
         total_iters = epochs * len(datasets[0][0])    # loop steps / optimizer steps, not every single image steps
@@ -1154,24 +1154,6 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
         model = DepthAnythingV2(**model_configs[encoder]).to(device)
     for param in model.parameters():
         param.requires_grad = True
-
-
-    # model.depth_head.parameters()
-    # lambda_loss = 0.5
-    # criterion_1 = SiLogLoss(lambd=lambda_loss)
-    # criterion = CombinedLoss(silog_lambda=0.5, 
-    #                          weight_silog=5.0, 
-    #                          weight_grad=100.0, 
-    #                          weight_ssim=10.0,
-    #                          weight_edge_aware=100.0,
-    #                          weight_l1=10.0)
-    # combined_criterion = CombinedLoss(silog_lambda=0.5, 
-    #                          weight_silog=0.5, 
-    #                          weight_grad=10.0, 
-    #                          weight_ssim=5.0,
-    #                          weight_edge_aware=10.0,
-    #                          weight_l1=1.0)
-    # perceptual_criterion = PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda')
 
     # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     if model_type == "complex_focus_only":
@@ -1217,9 +1199,6 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
         warm_up_blend = [(base_warm_up_blend_1, base_warm_up_blend_2), (complex_warm_up_blend_1, complex_warm_up_blend_2), fusion_warm_up_blend]
         all_warm_up_iters = [base_warm_up_iters, complex_warm_up_iters, fusion_warm_up_iters]
 
-        # criterion = [PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda'), 
-        #              PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda'),
-        #              PerceptualLoss(layers=('relu1_2', 'relu2_2', 'relu3_3'), device='cuda')]
         criterion = [CombinedLoss(silog_lambda=0.5, 
                                   weight_silog=10.0, 
                                   weight_grad=1000.0, 
@@ -1242,6 +1221,8 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                                   weight_edge_aware=1000.0,
                                   weight_l1=100.0,
                                   weight_vgg=100.0)]
+    elif model_type == "complex_focus_only_pix2pix":
+        pass
     else:
         start_lr_1 = 1e-8
         goal_lr_1 = lr*0.001
@@ -1300,17 +1281,17 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
             #     continue
 
             # Start Learning Fusion head after 6 epochs
-            if data_idx == 2 and epoch <= epochs*0.8:
+            if data_idx == 2 and epoch <= 5:# epochs*0.8:
                 continue
-            elif data_idx in [0, 1] and epoch > epochs*0.8:
-                continue
+            # elif data_idx in [0, 1] and epoch > epochs*0.8:
+            #     continue
 
-            if model_type == "complex_focus_only":
+            if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                 warm_up_iters = all_warm_up_iters[data_idx]
 
             model.train()
 
-            if model_type == "complex_focus_only":
+            if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                 model.switch_train(data_idx)
 
             running_loss = 0.0
@@ -1321,11 +1302,11 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
                 # analyze_target_distribution(target_depth)
 
-                if model_type == "complex_focus_only":
+                if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                     optimizer[data_idx].zero_grad()  # set gradients to 0
                 else:
                     optimizer.zero_grad()  # set gradients to 0
-                if model_type == "complex_focus_only":
+                if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                     # print("Input min/max/nan:", input_img.min().item(), input_img.max().item(), torch.isnan(input_img).any())
                     pred_depth = model.forward_part(input_img, data_idx)
                     # print("Output min/max/nan:", pred_depth.min().item(), pred_depth.max().item(), torch.isnan(pred_depth).any())
@@ -1336,7 +1317,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 # print("Loss value:", loss.item(), "Is NaN:", torch.isnan(loss).item(), "Is Inf:", torch.isinf(loss).item())
                 loss.backward()  # calc gradients
 
-                if model_type == "complex_focus_only":
+                if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                     if global_cur_iter[data_idx] < warm_up_iters:
                         print("\n------------------------")
                         # print(f"Target:\n    - min = {target_depth.min().item()}\n    - max = {target_depth.max().item()}\n    - mean = {target_depth.mean().item()}\n    - var = {target_depth.var().item()}\n    - nan = {torch.isnan(target_depth).any()}")
@@ -1344,32 +1325,6 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                         # print(criterion[data_idx].get_dict(data_idx))
                         model.get_gradient_insight(data_idx)
                         print("------------------------\n")
-
-                        # # restart
-                        # if epoch == 0 and global_cur_iter[data_idx] > 20:
-                        #     prediction_range = pred_depth.max().item() - pred_depth.min().item()
-                        #     if (data_idx == 1 and prediction_range < 0.3) or pred_depth.mean().item() == 0.0:
-                        #         print(f"Prediction is bad -> bad initialization.\n    -> prediction_range = {prediction_range}\n    -> prediction mean = {pred_depth.mean().item()} \n\nRestarting with new parameters...")
-
-                        #         # Define new args
-                        #         new_args = [
-                        #             "python", "train.py",
-                        #             "--variation", f"{variation}",
-                        #             "--input_type", f"{input_type}",
-                        #             "--output_type", f"{output_type}",
-                        #             "--model_name", f"{model_name}",
-                        #             "--model_type", f"{model_type}",
-                        #             "--encoder", f"{encoder}",
-                        #             "--batch_size", f"{batch_size}",
-                        #             "--epochs", f"{epochs}",
-                        #             "--lr", f"{lr}"
-                        #         ]
-
-                        #         # Use nohup and redirect output
-                        #         with open("restart.log", "w") as log_file:
-                        #             subprocess.Popen(["nohup"] + new_args, stdout=log_file, stderr=subprocess.STDOUT)
-
-                        #         sys.exit(0)  # Stop current run
 
                     # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # limit gradient
                     optimizer[data_idx].step()  # optimize weights with gradients
@@ -1380,7 +1335,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 running_loss += loss.item()
 
                 if global_cur_iter[data_idx] < warm_up_iters:
-                    if model_type == "complex_focus_only":
+                    if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                         if data_idx < 2:
                             warm_up_blend_1, warm_up_blend_2 = warm_up_blend[data_idx]
                             optimizer[data_idx].param_groups[0]['lr'] = warm_up_blend_1[global_cur_iter[data_idx]]
@@ -1405,7 +1360,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                 for i, batch in enumerate(val_loader):
                     input_img, target_depth, _ = batch
                     input_img, target_depth = input_img.to(device), target_depth.to(device)
-                    if model_type == "complex_focus_only":
+                    if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                         pred_depth = model.forward_part(input_img, data_idx)
                     else:
                         pred_depth = model(input_img)
@@ -1418,7 +1373,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
                         print(f"Output max (model-part {data_idx}): {pred_depth.max().item()}")
 
                         # Log first batch images
-                        if model_type == "complex_focus_only":
+                        if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                             # clip = data_idx == 1
                             prenorm_255 = data_idx == 1
                             val_img_log = inference_forward(input_img, lambda x:model.forward_part(x, data_idx), device, scale_to_256=True, clip=True, prenorm_255=prenorm_255)
@@ -1432,12 +1387,12 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
 
             avg_val_loss = val_loss / len(val_loader)
-            if model_type == "complex_focus_only":
+            if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                 cur_optimizer = optimizer[data_idx]
             else:
                 cur_optimizer = optimizer
 
-            if model_type == "complex_focus_only" and data_idx < 2:
+            if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"] and data_idx < 2:
                 log_dict = {
                                 f"{data_idx}_val_loss": avg_val_loss,
                                 f"{data_idx}_epoch": epoch + 1,
@@ -1479,7 +1434,7 @@ def train(variation, input_type, output_type, model_name, model_type, encoder, b
 
                 # Update learn rate
                 if global_cur_iter[data_idx] >= warm_up_iters:
-                    if model_type == "complex_focus_only":
+                    if model_type in ["complex_focus_only", "complex_focus_only_pix2pix"]:
                         base_scheduler.step()
                         complex_scheduler.step()
                         fusion_scheduler.step()
@@ -1498,7 +1453,7 @@ if __name__ == "__main__":
     parser.add_argument("--input_type", default="osm", help="Defines the used Input -> 'osm', 'base_simulation'")
     parser.add_argument("--output_type", default="standard", help="Defines the Output -> 'standard', 'complex_only'")
     parser.add_argument("--model_name", help="Name for saving the model checkpoint")
-    parser.add_argument("--model_type", default="depth_any", help="Type of model -> 'depth_any', 'complex_focus_only'")
+    parser.add_argument("--model_type", default="depth_any", help="Type of model -> 'depth_any', 'complex_focus_only', 'complex_focus_only_pix2pix'")
     parser.add_argument("--encoder", default="vitb", choices=["vits", "vitb", "vitl", "vitg"])
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=10)

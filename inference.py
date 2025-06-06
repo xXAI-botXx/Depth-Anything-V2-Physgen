@@ -209,8 +209,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     inference(variation=args.variation, 
-              input_type=input_type,
-              output_type=output_type,
+              input_type=args.input_type,
+              output_type=args.output_type,
               model_name=args.model_name, 
               model_type=args.model_type,
               encoder=args.encoder, 
