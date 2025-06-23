@@ -54,6 +54,14 @@ conda activate phy_any
 nohup python train.py --variation sound_reflection --input_type osm --output_type standard --model_name phys_any_cfo_1  --model_type complex_focus_only --encoder vitl --batch_size 12 --epochs 20 --lr 0.00001 > ./phys_any_cfo_1.log 2>&1 &
 ```
 
+Reflection Only with base as input Experiment:
+```anaconda
+cd path/to/Depth_Anything_V2_Physgen
+conda activate phy_any
+
+nohup python train.py --variation sound_reflection --input_type osm --output_type standard --model_name phys_any_ref_only_  --model_type complex_focus_only --encoder vitl --batch_size 12 --epochs 20 --lr 0.00001 > ./phys_any_ref_only_.log 2>&1 &
+```
+
 Killing the process: `ps aux | grep train.py | grep -v grep | awk '{print $2}' | xargs kill -9`
 
 
